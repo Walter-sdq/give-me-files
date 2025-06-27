@@ -34,6 +34,7 @@ export class WebRTCService {
     };
 
     this.peerConnection.ondatachannel = (event) => {
+      console.log('Data channel received from peer');
       const channel = event.channel;
       this.dataChannel = channel;
       this.setupDataChannel(channel);
@@ -41,8 +42,10 @@ export class WebRTCService {
   }
 
   private setupDataChannel(channel: RTCDataChannel) {
+    console.log('Setting up data channel:', channel.label);
+    
     channel.onopen = () => {
-      console.log('Data channel opened');
+      console.log('Data channel opened, ready for transfers');
       if (this.onConnectionStateCallback) {
         this.onConnectionStateCallback('connected');
       }
@@ -56,6 +59,7 @@ export class WebRTCService {
     };
 
     channel.onmessage = (event) => {
+      console.log('Data channel message received:', typeof event.data, event.data instanceof ArrayBuffer ? event.data.byteLength + ' bytes' : 'metadata');
       this.handleDataChannelMessage(event.data);
     };
 
@@ -68,13 +72,14 @@ export class WebRTCService {
     if (typeof data === 'string') {
       try {
         const message = JSON.parse(data);
+        console.log('Received metadata:', message);
         if (message.type === 'file-info') {
           this.expectedFileSize = message.size;
           this.fileName = message.name;
           this.fileType = message.fileType;
           this.receivedChunks = [];
           this.receivedSize = 0;
-          console.log('Receiving file:', message.name, 'Size:', message.size);
+          console.log('Starting to receive file:', message.name, 'Size:', message.size, 'bytes');
         }
       } catch (e) {
         console.error('Error parsing message:', e);
@@ -85,15 +90,23 @@ export class WebRTCService {
       console.log('Received chunk:', data.byteLength, 'bytes. Total:', this.receivedSize, '/', this.expectedFileSize);
 
       if (this.receivedSize >= this.expectedFileSize && this.expectedFileSize > 0) {
+        console.log('All chunks received, reconstructing file...');
         this.reconstructFile();
       }
     }
   }
 
   private reconstructFile() {
-    console.log('Reconstructing file from', this.receivedChunks.length, 'chunks');
-    const blob = new Blob(this.receivedChunks, { type: this.fileType });
-    const file = new File([blob], this.fileName, { type: this.fileType });
+    console.log('Reconstructing file from', this.receivedChunks.length, 'chunks, total size:', this.receivedSize);
+    
+    // Create blob from all chunks
+    const blob = new Blob(this.receivedChunks, { type: this.fileType || 'application/octet-stream' });
+    const file = new File([blob], this.fileName, { 
+      type: this.fileType || 'application/octet-stream',
+      lastModified: Date.now()
+    });
+    
+    console.log('File reconstructed successfully:', file.name, file.size, 'bytes, type:', file.type);
     
     if (this.onFileReceivedCallback) {
       this.onFileReceivedCallback(file);
@@ -108,8 +121,10 @@ export class WebRTCService {
   }
 
   async createOffer(): Promise<string> {
+    console.log('Creating data channel for offer');
     this.dataChannel = this.peerConnection.createDataChannel('fileTransfer', {
-      ordered: true
+      ordered: true,
+      maxRetransmits: 3
     });
     this.setupDataChannel(this.dataChannel);
 
@@ -120,6 +135,7 @@ export class WebRTCService {
     return new Promise((resolve) => {
       const checkState = () => {
         if (this.peerConnection.iceGatheringState === 'complete') {
+          console.log('ICE gathering complete, offer ready');
           resolve(JSON.stringify(this.peerConnection.localDescription));
         } else {
           setTimeout(checkState, 100);
@@ -128,20 +144,19 @@ export class WebRTCService {
       
       this.peerConnection.onicecandidate = (event) => {
         if (!event.candidate) {
+          console.log('No more ICE candidates, offer ready');
           resolve(JSON.stringify(this.peerConnection.localDescription));
         }
       };
       
-      // Fallback timeout
-      setTimeout(() => {
-        resolve(JSON.stringify(this.peerConnection.localDescription));
-      }, 5000);
+      checkState();
     });
   }
 
   async createAnswer(offerString: string): Promise<string> {
     try {
       const offer = JSON.parse(offerString);
+      console.log('Setting remote description with offer');
       await this.peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
 
       const answer = await this.peerConnection.createAnswer();
@@ -151,6 +166,7 @@ export class WebRTCService {
       return new Promise((resolve) => {
         const checkState = () => {
           if (this.peerConnection.iceGatheringState === 'complete') {
+            console.log('ICE gathering complete, answer ready');
             resolve(JSON.stringify(this.peerConnection.localDescription));
           } else {
             setTimeout(checkState, 100);
@@ -159,14 +175,12 @@ export class WebRTCService {
         
         this.peerConnection.onicecandidate = (event) => {
           if (!event.candidate) {
+            console.log('No more ICE candidates, answer ready');
             resolve(JSON.stringify(this.peerConnection.localDescription));
           }
         };
         
-        // Fallback timeout
-        setTimeout(() => {
-          resolve(JSON.stringify(this.peerConnection.localDescription));
-        }, 5000);
+        checkState();
       });
     } catch (error) {
       console.error('Error creating answer:', error);
@@ -177,6 +191,7 @@ export class WebRTCService {
   async acceptAnswer(answerString: string): Promise<void> {
     try {
       const answer = JSON.parse(answerString);
+      console.log('Setting remote description with answer');
       await this.peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
     } catch (error) {
       console.error('Error accepting answer:', error);
@@ -186,10 +201,10 @@ export class WebRTCService {
 
   async sendFile(file: File, onProgress: (progress: number) => void): Promise<void> {
     if (!this.dataChannel || this.dataChannel.readyState !== 'open') {
-      throw new Error('Data channel not ready');
+      throw new Error('Data channel not ready for transfer');
     }
 
-    console.log('Starting file transfer:', file.name, file.size, 'bytes');
+    console.log('Starting file transfer:', file.name, file.size, 'bytes, type:', file.type);
 
     // Send file info first
     const fileInfo = {
@@ -198,12 +213,19 @@ export class WebRTCService {
       size: file.size,
       fileType: file.type
     };
+    
+    console.log('Sending file metadata:', fileInfo);
     this.dataChannel.send(JSON.stringify(fileInfo));
+
+    // Wait a bit for metadata to be processed
+    await new Promise(resolve => setTimeout(resolve, 100));
 
     // Send file in chunks
     const chunkSize = 16384; // 16KB chunks
     const totalChunks = Math.ceil(file.size / chunkSize);
     let sentChunks = 0;
+
+    console.log('Will send', totalChunks, 'chunks of', chunkSize, 'bytes each');
 
     for (let start = 0; start < file.size; start += chunkSize) {
       const end = Math.min(start + chunkSize, file.size);
@@ -215,14 +237,15 @@ export class WebRTCService {
         await new Promise(resolve => setTimeout(resolve, 10));
       }
 
+      console.log('Sending chunk', sentChunks + 1, '/', totalChunks, '- Size:', arrayBuffer.byteLength, 'bytes');
       this.dataChannel.send(arrayBuffer);
       sentChunks++;
+      
       const progress = (sentChunks / totalChunks) * 100;
       onProgress(progress);
-      console.log('Sent chunk', sentChunks, '/', totalChunks, '- Progress:', progress.toFixed(1) + '%');
     }
 
-    console.log('File transfer completed');
+    console.log('File transfer completed - sent', sentChunks, 'chunks');
   }
 
   onFileReceived(callback: (file: File) => void): void {
