@@ -11,7 +11,7 @@ interface ConnectionPanelProps {
   mode: 'send' | 'receive';
   connectionCode: string;
   isConnected: boolean;
-  onConnect: () => void;
+  onConnect: (code: string) => void;
 }
 
 const ConnectionPanel = ({ mode, connectionCode, isConnected, onConnect }: ConnectionPanelProps) => {
@@ -28,11 +28,7 @@ const ConnectionPanel = ({ mode, connectionCode, isConnected, onConnect }: Conne
       return;
     }
     
-    onConnect();
-    toast({
-      title: "Connected!",
-      description: "Successfully connected to peer device",
-    });
+    onConnect(inputCode);
   };
 
   const copyToClipboard = () => {
@@ -77,6 +73,11 @@ const ConnectionPanel = ({ mode, connectionCode, isConnected, onConnect }: Conne
                 <Share className="h-4 w-4" />
               </Button>
             </div>
+            {!isConnected && (
+              <p className="text-xs text-gray-500 text-center">
+                Waiting for receiver to connect...
+              </p>
+            )}
           </div>
         )}
 
@@ -90,17 +91,16 @@ const ConnectionPanel = ({ mode, connectionCode, isConnected, onConnect }: Conne
               maxLength={6}
               className="text-center text-lg font-mono tracking-wider"
             />
+            {!isConnected && (
+              <Button
+                onClick={handleConnect}
+                disabled={inputCode.length !== 6}
+                className="w-full bg-gradient-to-r from-blue-500 to-purple-600 hover:shadow-lg transition-all duration-300"
+              >
+                Connect
+              </Button>
+            )}
           </div>
-        )}
-
-        {!isConnected && (
-          <Button
-            onClick={handleConnect}
-            disabled={mode === 'receive' && inputCode.length !== 6}
-            className="w-full bg-gradient-to-r from-blue-500 to-purple-600 hover:shadow-lg transition-all duration-300"
-          >
-            Connect
-          </Button>
         )}
 
         {isConnected && (

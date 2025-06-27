@@ -1,13 +1,13 @@
-
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
-import { Progress } from '@/components/ui/progress';
 import { Upload, Download, Share, Network } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import FileDropZone from '@/components/FileDropZone';
 import ConnectionPanel from '@/components/ConnectionPanel';
 import TransferProgress from '@/components/TransferProgress';
+import { P2PManager } from '@/services/p2pManager';
+import { WebRTCService } from '@/services/webrtc';
 
 const Index = () => {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -16,7 +16,20 @@ const Index = () => {
   const [transferProgress, setTransferProgress] = useState(0);
   const [isTransferring, setIsTransferring] = useState(false);
   const [mode, setMode] = useState<'send' | 'receive'>('send');
+  const [receivedFile, setReceivedFile] = useState<File | null>(null);
   const { toast } = useToast();
+  
+  const p2pManagerRef = useRef<P2PManager | null>(null);
+  const webrtcRef = useRef<WebRTCService | null>(null);
+
+  useEffect(() => {
+    return () => {
+      // Cleanup on unmount
+      if (p2pManagerRef.current) {
+        p2pManagerRef.current.cleanup();
+      }
+    };
+  }, []);
 
   const handleFileSelect = useCallback((file: File) => {
     setSelectedFile(file);
@@ -26,32 +39,134 @@ const Index = () => {
     });
   }, [toast]);
 
-  const generateConnectionCode = () => {
-    const code = Math.random().toString(36).substring(2, 8).toUpperCase();
-    setConnectionCode(code);
-    toast({
-      title: "Connection code generated",
-      description: `Share this code: ${code}`,
-    });
+  const generateConnectionCode = async () => {
+    try {
+      p2pManagerRef.current = new P2PManager();
+      const code = await p2pManagerRef.current.createConnection();
+      setConnectionCode(code);
+      
+      // Setup WebRTC callbacks
+      const webrtc = p2pManagerRef.current.getWebRTCConnection();
+      if (webrtc) {
+        webrtcRef.current = webrtc;
+        webrtc.onConnectionStateChange((state) => {
+          console.log('Connection state changed:', state);
+          setIsConnected(state === 'connected');
+        });
+        
+        webrtc.onFileReceived((file) => {
+          setReceivedFile(file);
+          toast({
+            title: "File received!",
+            description: `Received ${file.name}`,
+          });
+        });
+      }
+
+      toast({
+        title: "Connection code generated",
+        description: `Share this code: ${code}`,
+      });
+
+      // Complete connection (wait for peer)
+      await p2pManagerRef.current.completeConnection();
+    } catch (error) {
+      console.error('Error generating connection:', error);
+      toast({
+        title: "Connection failed",
+        description: "Failed to create connection",
+        variant: "destructive",
+      });
+    }
   };
 
-  const startTransfer = () => {
-    setIsTransferring(true);
-    // Simulate transfer progress
-    const interval = setInterval(() => {
-      setTransferProgress(prev => {
-        if (prev >= 100) {
-          clearInterval(interval);
-          setIsTransferring(false);
+  const joinConnection = async (code: string) => {
+    try {
+      p2pManagerRef.current = new P2PManager();
+      await p2pManagerRef.current.joinConnection(code);
+      
+      // Setup WebRTC callbacks
+      const webrtc = p2pManagerRef.current.getWebRTCConnection();
+      if (webrtc) {
+        webrtcRef.current = webrtc;
+        webrtc.onConnectionStateChange((state) => {
+          console.log('Connection state changed:', state);
+          setIsConnected(state === 'connected');
+        });
+        
+        webrtc.onFileReceived((file) => {
+          setReceivedFile(file);
           toast({
-            title: "Transfer complete!",
-            description: "File has been successfully shared",
+            title: "File received!",
+            description: `Received ${file.name}`,
           });
-          return 100;
-        }
-        return prev + 2;
+        });
+      }
+
+      toast({
+        title: "Connected!",
+        description: "Successfully connected to peer device",
       });
-    }, 100);
+    } catch (error) {
+      console.error('Error joining connection:', error);
+      toast({
+        title: "Connection failed",
+        description: "Failed to connect to peer",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const startTransfer = async () => {
+    if (!selectedFile || !webrtcRef.current) {
+      toast({
+        title: "Error",
+        description: "No file selected or connection not ready",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    try {
+      setIsTransferring(true);
+      setTransferProgress(0);
+
+      await webrtcRef.current.sendFile(selectedFile, (progress) => {
+        setTransferProgress(progress);
+      });
+
+      setIsTransferring(false);
+      toast({
+        title: "Transfer complete!",
+        description: "File has been successfully sent",
+      });
+    } catch (error) {
+      console.error('Transfer error:', error);
+      setIsTransferring(false);
+      toast({
+        title: "Transfer failed",
+        description: "Failed to send file",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const downloadReceivedFile = () => {
+    if (!receivedFile) return;
+
+    const url = URL.createObjectURL(receivedFile);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = receivedFile.name;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    toast({
+      title: "File downloaded",
+      description: `${receivedFile.name} has been downloaded`,
+    });
   };
 
   return (
@@ -118,10 +233,11 @@ const Index = () => {
                         <h3 className="text-lg font-semibold">Ready to Share</h3>
                         <Button
                           onClick={generateConnectionCode}
+                          disabled={!!connectionCode}
                           className="bg-gradient-to-r from-green-500 to-emerald-600 hover:shadow-lg transition-all duration-300"
                         >
                           <Share className="h-4 w-4 mr-2" />
-                          Generate Code
+                          {connectionCode ? 'Code Generated' : 'Generate Code'}
                         </Button>
                       </div>
                     </div>
@@ -136,20 +252,20 @@ const Index = () => {
                 mode={mode}
                 connectionCode={connectionCode}
                 isConnected={isConnected}
-                onConnect={() => setIsConnected(true)}
+                onConnect={joinConnection}
               />
 
               {/* Transfer Progress */}
-              {isTransferring && (
+              {isTransferring && selectedFile && (
                 <TransferProgress
                   progress={transferProgress}
-                  fileName={selectedFile?.name || ''}
-                  fileSize={selectedFile?.size || 0}
+                  fileName={selectedFile.name}
+                  fileSize={selectedFile.size}
                 />
               )}
 
               {/* Start Transfer Button */}
-              {isConnected && selectedFile && !isTransferring && (
+              {isConnected && selectedFile && !isTransferring && mode === 'send' && (
                 <Card className="p-6 bg-white/70 backdrop-blur-sm border-white/20 shadow-lg">
                   <Button
                     onClick={startTransfer}
@@ -157,6 +273,30 @@ const Index = () => {
                   >
                     Start Transfer
                   </Button>
+                </Card>
+              )}
+
+              {/* Received File */}
+              {receivedFile && (
+                <Card className="p-6 bg-white/70 backdrop-blur-sm border-white/20 shadow-lg">
+                  <div className="space-y-4">
+                    <h3 className="text-lg font-semibold text-green-700">File Received!</h3>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="font-medium">{receivedFile.name}</p>
+                        <p className="text-sm text-gray-600">
+                          {(receivedFile.size / 1024 / 1024).toFixed(2)} MB
+                        </p>
+                      </div>
+                      <Button
+                        onClick={downloadReceivedFile}
+                        className="bg-gradient-to-r from-green-500 to-emerald-600 hover:shadow-lg transition-all duration-300"
+                      >
+                        <Download className="h-4 w-4 mr-2" />
+                        Download
+                      </Button>
+                    </div>
+                  </div>
                 </Card>
               )}
             </div>
