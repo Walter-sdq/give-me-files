@@ -1,4 +1,3 @@
-
 export class WebRTCService {
   private peerConnection: RTCPeerConnection;
   private dataChannel: RTCDataChannel | null = null;
@@ -44,6 +43,9 @@ export class WebRTCService {
   private setupDataChannel(channel: RTCDataChannel) {
     console.log('Setting up data channel:', channel.label);
     
+    // Set binary type to arraybuffer for file transfers
+    channel.binaryType = 'arraybuffer';
+    
     channel.onopen = () => {
       console.log('Data channel opened, ready for transfers');
       if (this.onConnectionStateCallback) {
@@ -85,6 +87,7 @@ export class WebRTCService {
         console.error('Error parsing message:', e);
       }
     } else if (data instanceof ArrayBuffer) {
+      console.log('Received binary chunk:', data.byteLength, 'bytes');
       this.receivedChunks.push(data);
       this.receivedSize += data.byteLength;
       console.log('Received chunk:', data.byteLength, 'bytes. Total:', this.receivedSize, '/', this.expectedFileSize);
@@ -93,6 +96,8 @@ export class WebRTCService {
         console.log('All chunks received, reconstructing file...');
         this.reconstructFile();
       }
+    } else {
+      console.log('Received unknown data type:', typeof data, data);
     }
   }
 
@@ -126,6 +131,9 @@ export class WebRTCService {
       ordered: true,
       maxRetransmits: 3
     });
+    
+    // Set binary type immediately
+    this.dataChannel.binaryType = 'arraybuffer';
     this.setupDataChannel(this.dataChannel);
 
     const offer = await this.peerConnection.createOffer();
@@ -217,35 +225,50 @@ export class WebRTCService {
     console.log('Sending file metadata:', fileInfo);
     this.dataChannel.send(JSON.stringify(fileInfo));
 
-    // Wait a bit for metadata to be processed
-    await new Promise(resolve => setTimeout(resolve, 100));
+    // Wait for metadata to be processed
+    await new Promise(resolve => setTimeout(resolve, 200));
+
+    // Convert file to ArrayBuffer first
+    const fileBuffer = await file.arrayBuffer();
+    console.log('File converted to ArrayBuffer:', fileBuffer.byteLength, 'bytes');
 
     // Send file in chunks
     const chunkSize = 16384; // 16KB chunks
-    const totalChunks = Math.ceil(file.size / chunkSize);
+    const totalChunks = Math.ceil(fileBuffer.byteLength / chunkSize);
     let sentChunks = 0;
 
     console.log('Will send', totalChunks, 'chunks of', chunkSize, 'bytes each');
 
-    for (let start = 0; start < file.size; start += chunkSize) {
-      const end = Math.min(start + chunkSize, file.size);
-      const chunk = file.slice(start, end);
-      const arrayBuffer = await chunk.arrayBuffer();
+    for (let start = 0; start < fileBuffer.byteLength; start += chunkSize) {
+      const end = Math.min(start + chunkSize, fileBuffer.byteLength);
+      const chunk = fileBuffer.slice(start, end);
       
       // Wait for channel buffer to clear if needed
-      while (this.dataChannel.bufferedAmount > chunkSize * 64) {
-        await new Promise(resolve => setTimeout(resolve, 10));
+      while (this.dataChannel.bufferedAmount > chunkSize * 10) {
+        console.log('Waiting for buffer to clear, current:', this.dataChannel.bufferedAmount);
+        await new Promise(resolve => setTimeout(resolve, 50));
       }
 
-      console.log('Sending chunk', sentChunks + 1, '/', totalChunks, '- Size:', arrayBuffer.byteLength, 'bytes');
-      this.dataChannel.send(arrayBuffer);
-      sentChunks++;
+      console.log('Sending chunk', sentChunks + 1, '/', totalChunks, '- Size:', chunk.byteLength, 'bytes, buffered:', this.dataChannel.bufferedAmount);
       
-      const progress = (sentChunks / totalChunks) * 100;
-      onProgress(progress);
+      try {
+        this.dataChannel.send(chunk);
+        sentChunks++;
+        
+        const progress = (sentChunks / totalChunks) * 100;
+        onProgress(progress);
+        
+        // Small delay between chunks to prevent overwhelming
+        if (sentChunks < totalChunks) {
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+      } catch (error) {
+        console.error('Error sending chunk:', error);
+        throw new Error(`Failed to send chunk ${sentChunks + 1}: ${error}`);
+      }
     }
 
-    console.log('File transfer completed - sent', sentChunks, 'chunks');
+    console.log('File transfer completed - sent', sentChunks, 'chunks, total bytes:', fileBuffer.byteLength);
   }
 
   onFileReceived(callback: (file: File) => void): void {
