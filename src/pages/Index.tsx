@@ -17,6 +17,7 @@ const Index = () => {
   const [isTransferring, setIsTransferring] = useState(false);
   const [mode, setMode] = useState<'send' | 'receive'>('send');
   const [receivedFile, setReceivedFile] = useState<File | null>(null);
+  const [connectionStatus, setConnectionStatus] = useState<string>('disconnected');
   const { toast } = useToast();
   
   const p2pManagerRef = useRef<P2PManager | null>(null);
@@ -39,8 +40,28 @@ const Index = () => {
     });
   }, [toast]);
 
+  const setupWebRTCCallbacks = (webrtc: WebRTCService) => {
+    webrtc.onConnectionStateChange((state) => {
+      console.log('Connection state changed:', state);
+      setConnectionStatus(state);
+      setIsConnected(state === 'connected');
+    });
+    
+    webrtc.onFileReceived((file) => {
+      console.log('File received:', file.name);
+      setReceivedFile(file);
+      setIsTransferring(false);
+      setTransferProgress(0);
+      toast({
+        title: "File received!",
+        description: `Successfully received ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)`,
+      });
+    });
+  };
+
   const generateConnectionCode = async () => {
     try {
+      setConnectionStatus('connecting');
       p2pManagerRef.current = new P2PManager();
       const code = await p2pManagerRef.current.createConnection();
       setConnectionCode(code);
@@ -49,18 +70,7 @@ const Index = () => {
       const webrtc = p2pManagerRef.current.getWebRTCConnection();
       if (webrtc) {
         webrtcRef.current = webrtc;
-        webrtc.onConnectionStateChange((state) => {
-          console.log('Connection state changed:', state);
-          setIsConnected(state === 'connected');
-        });
-        
-        webrtc.onFileReceived((file) => {
-          setReceivedFile(file);
-          toast({
-            title: "File received!",
-            description: `Received ${file.name}`,
-          });
-        });
+        setupWebRTCCallbacks(webrtc);
       }
 
       toast({
@@ -68,10 +78,19 @@ const Index = () => {
         description: `Share this code: ${code}`,
       });
 
-      // Complete connection (wait for peer)
-      await p2pManagerRef.current.completeConnection();
+      // Complete connection (wait for peer) in background
+      p2pManagerRef.current.completeConnection().catch((error) => {
+        console.error('Connection completion failed:', error);
+        setConnectionStatus('failed');
+        toast({
+          title: "Connection timeout",
+          description: "No one connected with your code",
+          variant: "destructive",
+        });
+      });
     } catch (error) {
       console.error('Error generating connection:', error);
+      setConnectionStatus('failed');
       toast({
         title: "Connection failed",
         description: "Failed to create connection",
@@ -82,6 +101,7 @@ const Index = () => {
 
   const joinConnection = async (code: string) => {
     try {
+      setConnectionStatus('connecting');
       p2pManagerRef.current = new P2PManager();
       await p2pManagerRef.current.joinConnection(code);
       
@@ -89,18 +109,7 @@ const Index = () => {
       const webrtc = p2pManagerRef.current.getWebRTCConnection();
       if (webrtc) {
         webrtcRef.current = webrtc;
-        webrtc.onConnectionStateChange((state) => {
-          console.log('Connection state changed:', state);
-          setIsConnected(state === 'connected');
-        });
-        
-        webrtc.onFileReceived((file) => {
-          setReceivedFile(file);
-          toast({
-            title: "File received!",
-            description: `Received ${file.name}`,
-          });
-        });
+        setupWebRTCCallbacks(webrtc);
       }
 
       toast({
@@ -109,9 +118,10 @@ const Index = () => {
       });
     } catch (error) {
       console.error('Error joining connection:', error);
+      setConnectionStatus('failed');
       toast({
         title: "Connection failed",
-        description: "Failed to connect to peer",
+        description: "Failed to connect to peer. Check the code and try again.",
         variant: "destructive",
       });
     }
@@ -127,25 +137,35 @@ const Index = () => {
       return;
     }
 
+    if (!isConnected) {
+      toast({
+        title: "Error",
+        description: "Not connected to peer device",
+        variant: "destructive",
+      });
+      return;
+    }
+
     try {
       setIsTransferring(true);
       setTransferProgress(0);
 
       await webrtcRef.current.sendFile(selectedFile, (progress) => {
-        setTransferProgress(progress);
+        setTransferProgress(Math.round(progress));
       });
 
       setIsTransferring(false);
       toast({
         title: "Transfer complete!",
-        description: "File has been successfully sent",
+        description: `Successfully sent ${selectedFile.name}`,
       });
     } catch (error) {
       console.error('Transfer error:', error);
       setIsTransferring(false);
+      setTransferProgress(0);
       toast({
         title: "Transfer failed",
-        description: "Failed to send file",
+        description: "Failed to send file. Connection may have been lost.",
         variant: "destructive",
       });
     }
@@ -169,6 +189,20 @@ const Index = () => {
     });
   };
 
+  const resetConnection = () => {
+    if (p2pManagerRef.current) {
+      p2pManagerRef.current.cleanup();
+    }
+    p2pManagerRef.current = null;
+    webrtcRef.current = null;
+    setIsConnected(false);
+    setConnectionCode('');
+    setConnectionStatus('disconnected');
+    setTransferProgress(0);
+    setIsTransferring(false);
+    setReceivedFile(null);
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50">
       <div className="container mx-auto px-4 py-8">
@@ -187,12 +221,22 @@ const Index = () => {
           </p>
         </div>
 
+        {/* Debug Info */}
+        <div className="text-center mb-4">
+          <span className="text-sm text-gray-500">
+            Status: {connectionStatus} | Connected: {isConnected ? 'Yes' : 'No'}
+          </span>
+        </div>
+
         {/* Mode Selection */}
         <div className="flex justify-center mb-8">
           <div className="bg-white/70 backdrop-blur-sm rounded-2xl p-2 shadow-lg border border-white/20">
             <div className="flex space-x-2">
               <Button
-                onClick={() => setMode('send')}
+                onClick={() => {
+                  setMode('send');
+                  resetConnection();
+                }}
                 variant={mode === 'send' ? 'default' : 'ghost'}
                 className={`px-6 py-3 rounded-xl transition-all duration-300 ${
                   mode === 'send' 
@@ -204,7 +248,10 @@ const Index = () => {
                 Send File
               </Button>
               <Button
-                onClick={() => setMode('receive')}
+                onClick={() => {
+                  setMode('receive');
+                  resetConnection();
+                }}
                 variant={mode === 'receive' ? 'default' : 'ghost'}
                 className={`px-6 py-3 rounded-xl transition-all duration-300 ${
                   mode === 'receive' 
@@ -233,11 +280,11 @@ const Index = () => {
                         <h3 className="text-lg font-semibold">Ready to Share</h3>
                         <Button
                           onClick={generateConnectionCode}
-                          disabled={!!connectionCode}
+                          disabled={!!connectionCode || connectionStatus === 'connecting'}
                           className="bg-gradient-to-r from-green-500 to-emerald-600 hover:shadow-lg transition-all duration-300"
                         >
                           <Share className="h-4 w-4 mr-2" />
-                          {connectionCode ? 'Code Generated' : 'Generate Code'}
+                          {connectionCode ? 'Code Generated' : connectionStatus === 'connecting' ? 'Generating...' : 'Generate Code'}
                         </Button>
                       </div>
                     </div>
@@ -297,6 +344,19 @@ const Index = () => {
                       </Button>
                     </div>
                   </div>
+                </Card>
+              )}
+
+              {/* Reset Connection Button */}
+              {(connectionCode || isConnected) && (
+                <Card className="p-6 bg-white/70 backdrop-blur-sm border-white/20 shadow-lg">
+                  <Button
+                    onClick={resetConnection}
+                    variant="outline"
+                    className="w-full"
+                  >
+                    New Connection
+                  </Button>
                 </Card>
               )}
             </div>
