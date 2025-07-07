@@ -17,6 +17,7 @@ const Index = () => {
   const [isTransferring, setIsTransferring] = useState(false);
   const [mode, setMode] = useState<'send' | 'receive'>('send');
   const [receivedFile, setReceivedFile] = useState<File | null>(null);
+  const [receivedThumbnail, setReceivedThumbnail] = useState<string | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<string>('disconnected');
   const { toast } = useToast();
   
@@ -52,6 +53,14 @@ const Index = () => {
       setReceivedFile(file);
       setIsTransferring(false);
       setTransferProgress(0);
+      // Generate thumbnail if image
+      if (file.type.startsWith('image/')) {
+        const reader = new FileReader();
+        reader.onload = (e) => setReceivedThumbnail(e.target?.result as string);
+        reader.readAsDataURL(file);
+      } else {
+        setReceivedThumbnail(null);
+      }
       toast({
         title: "File received!",
         description: `Successfully received ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)`,
@@ -330,6 +339,14 @@ const Index = () => {
                     <h3 className="text-lg font-semibold text-green-700">File Received!</h3>
                     <div className="flex items-center justify-between">
                       <div>
+                        {receivedThumbnail && (
+                          <img
+                            src={receivedThumbnail}
+                            alt="Received Thumbnail"
+                            className="mb-2 rounded shadow border"
+                            style={{ width: 64, height: 64, objectFit: 'cover' }}
+                          />
+                        )}
                         <p className="font-medium">{receivedFile.name}</p>
                         <p className="text-sm text-gray-600">
                           {(receivedFile.size / 1024 / 1024).toFixed(2)} MB
@@ -338,11 +355,15 @@ const Index = () => {
                       <Button
                         onClick={downloadReceivedFile}
                         className="bg-gradient-to-r from-green-500 to-emerald-600 hover:shadow-lg transition-all duration-300"
+                        disabled={typeof window !== 'undefined' && 'showDirectoryPicker' in window}
                       >
                         <Download className="h-4 w-4 mr-2" />
                         Download
                       </Button>
                     </div>
+                    {typeof window !== 'undefined' && 'showDirectoryPicker' in window && (
+                      <div className="text-xs text-gray-500 mt-2">File was saved to your chosen folder.</div>
+                    )}
                   </div>
                 </Card>
               )}

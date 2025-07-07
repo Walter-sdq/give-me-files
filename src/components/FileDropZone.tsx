@@ -1,4 +1,3 @@
-
 import { useCallback, useState } from 'react';
 import { Card } from '@/components/ui/card';
 import { Upload, Files } from 'lucide-react';
@@ -10,6 +9,7 @@ interface FileDropZoneProps {
 
 const FileDropZone = ({ onFileSelect, selectedFile }: FileDropZoneProps) => {
   const [isDragOver, setIsDragOver] = useState(false);
+  const [thumbnail, setThumbnail] = useState<string | null>(null);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -24,17 +24,32 @@ const FileDropZone = ({ onFileSelect, selectedFile }: FileDropZoneProps) => {
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setIsDragOver(false);
-    
     const files = Array.from(e.dataTransfer.files);
     if (files.length > 0) {
-      onFileSelect(files[0]);
+      const file = files[0];
+      onFileSelect(file);
+      if (file.type.startsWith('image/')) {
+        const reader = new FileReader();
+        reader.onload = (ev) => setThumbnail(ev.target?.result as string);
+        reader.readAsDataURL(file);
+      } else {
+        setThumbnail(null);
+      }
     }
   }, [onFileSelect]);
 
   const handleFileInput = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (files && files.length > 0) {
-      onFileSelect(files[0]);
+      const file = files[0];
+      onFileSelect(file);
+      if (file.type.startsWith('image/')) {
+        const reader = new FileReader();
+        reader.onload = (ev) => setThumbnail(ev.target?.result as string);
+        reader.readAsDataURL(file);
+      } else {
+        setThumbnail(null);
+      }
     }
   }, [onFileSelect]);
 
@@ -70,6 +85,14 @@ const FileDropZone = ({ onFileSelect, selectedFile }: FileDropZoneProps) => {
       <div className="text-center space-y-4">
         {selectedFile ? (
           <>
+            {thumbnail && (
+              <img
+                src={thumbnail}
+                alt="Thumbnail"
+                className="mx-auto mb-2 rounded shadow border"
+                style={{ width: 64, height: 64, objectFit: 'cover' }}
+              />
+            )}
             <div className="w-16 h-16 bg-gradient-to-r from-green-500 to-emerald-600 rounded-2xl flex items-center justify-center mx-auto">
               <Files className="h-8 w-8 text-white" />
             </div>

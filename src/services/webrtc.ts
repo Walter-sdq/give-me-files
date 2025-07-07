@@ -8,6 +8,9 @@ export class WebRTCService {
   private receivedSize = 0;
   private fileName = '';
   private fileType = '';
+  private waitingForReady = false;
+  private readyPromise: Promise<void> | null = null;
+  private readyResolve: (() => void) | null = null;
 
   constructor() {
     this.peerConnection = new RTCPeerConnection({
@@ -82,6 +85,15 @@ export class WebRTCService {
           this.receivedChunks = [];
           this.receivedSize = 0;
           console.log('Starting to receive file:', message.name, 'Size:', message.size, 'bytes');
+          // Send ready handshake
+          if (this.dataChannel && this.dataChannel.readyState === 'open') {
+            this.dataChannel.send(JSON.stringify({ type: 'ready' }));
+          }
+        } else if (message.type === 'ready') {
+          // Sender receives ready handshake
+          if (this.waitingForReady && this.readyResolve) {
+            this.readyResolve();
+          }
         }
       } catch (e) {
         console.error('Error parsing message:', e);
@@ -225,8 +237,19 @@ export class WebRTCService {
     console.log('Sending file metadata:', fileInfo);
     this.dataChannel.send(JSON.stringify(fileInfo));
 
-    // Wait for metadata to be processed
-    await new Promise(resolve => setTimeout(resolve, 200));
+    // Wait for receiver to send 'ready' handshake
+    this.waitingForReady = true;
+    this.readyPromise = new Promise<void>((resolve) => {
+      this.readyResolve = () => {
+        this.waitingForReady = false;
+        this.readyPromise = null;
+        this.readyResolve = null;
+        resolve();
+      };
+    });
+    console.log('Waiting for receiver ready handshake...');
+    await this.readyPromise;
+    console.log('Receiver is ready, starting file transfer.');
 
     // Convert file to ArrayBuffer first
     const fileBuffer = await file.arrayBuffer();
@@ -272,7 +295,28 @@ export class WebRTCService {
   }
 
   onFileReceived(callback: (file: File) => void): void {
-    this.onFileReceivedCallback = callback;
+    this.onFileReceivedCallback = async (file: File) => {
+      // Try File System Access API if available
+      if ('showDirectoryPicker' in window) {
+        try {
+          // Prompt user to pick a directory
+          // @ts-ignore
+          const dirHandle = await window.showDirectoryPicker();
+          const fileHandle = await dirHandle.getFileHandle(file.name, { create: true });
+          const writable = await fileHandle.createWritable();
+          await writable.write(file);
+          await writable.close();
+          alert(`File saved to: ${file.name}`);
+        } catch (e) {
+          console.error('Failed to save file to selected directory:', e);
+          // Fallback to callback (download in browser)
+          callback(file);
+        }
+      } else {
+        // Fallback for browsers without File System Access API
+        callback(file);
+      }
+    };
   }
 
   onConnectionStateChange(callback: (state: string) => void): void {
