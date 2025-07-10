@@ -78,6 +78,10 @@ const FileDropZone = ({ onFileSelect, selectedFile }: FileDropZoneProps) => {
       <input
         id="file-input"
         type="file"
+        multiple={true}
+        accept="*"
+        data-testid="file-input"
+        aria-label="File input"
         className="hidden"
         onChange={handleFileInput}
       />
